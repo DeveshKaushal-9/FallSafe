@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+  <div class="app-logo">
+    <div class="logo-icon">🔺</div>
+    <span class="logo-text">3D Reconstructor</span>
+  </div>
+
+  <h1>Photos to 3D</h1>
+  <p class="subtitle">Upload a folder of images or a video — get a 3D model.</p>
+
+  <!-- Mode toggle -->
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="btn-images" onclick="switchMode('images')">
+      📷 Image Folder
+    </button>
+    <button class="mode-btn" id="btn-video" onclick="switchMode('video')">
+      🎬 Video File
+    </button>
+  </div>
+
+  <!-- Images drop zone -->
+  <div class="upload-zone" id="drop-zone-images">
+    <span class="upload-icon">📂</span>
+    <h3 id="label-images">Drop image folder here</h3>
+    <p class="upload-hint">JPG · PNG · BMP · TIFF · WEBP — 20+ images recommended</p>
+    <input type="file" id="file-input-images" multiple accept=".jpg,.jpeg,.png,.bmp,.tiff,.tif,.webp" webkitdirectory />
+  </div>
+
+  <!-- Video drop zone -->
+  <div class="upload-zone hidden" id="drop-zone-video">
+    <span class="upload-icon">🎥</span>
+    <h3 id="label-video">Drop video file here</h3>
+    <p class="upload-hint">MP4 · MOV · AVI · MKV</p>
+    <input type="file" id="file-input-video" accept=".mp4,.mov,.avi,.mkv" />
+  </div>
+
+  <button id="upload-btn" class="btn">✦ Start Reconstruction</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let mode = 'images';
+  let selectedFiles = [];
+
+  const zones = { images: document.getElementById('drop-zone-images'), video: document.getElementById('drop-zone-video') };
+  const inputs = { images: document.getElementById('file-input-images'), video: document.getElementById('file-input-video') };
+  const labels = { images: document.getElementById('label-images'), video: document.getElementById('label-video') };
+
+  function switchMode(m) {
+    mode = m;
+    selectedFiles = [];
+    document.getElementById('btn-images').classList.toggle('active', m === 'images');
+    document.getElementById('btn-video').classList.toggle('active', m === 'video');
+    zones.images.classList.toggle('hidden', m !== 'images');
+    zones.video.classList.toggle('hidden', m !== 'video');
+    labels.images.textContent = 'Drop image folder here';
+    labels.video.textContent = 'Drop video file here';
+  }
+
+  Object.values(zones).forEach(zone => {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', async e => {
+      e.preventDefault(); zone.classList.remove('dragover'); selectedFiles = [];
+      const items = e.dataTransfer.items;
+      if (items) await Promise.all([...items].map(i => { const en = i.webkitGetAsEntry?.(); return en ? traverseFileTree(en) : Promise.resolve(); }));
+      else selectedFiles = [...e.dataTransfer.files];
+      updateUI();
+    });
+  });
+
+  function traverseFileTree(item) {
+    return new Promise(resolve => {
+      if (item.isFile) item.file(f => { selectedFiles.push(f); resolve(); });
+      else if (item.isDirectory) item.createReader().readEntries(async entries => { await Promise.all(entries.map(e => traverseFileTree(e))); resolve(); });
+      else resolve();
+    });
+  }
+
+  inputs.images.addEventListener('change', e => { selectedFiles = [...e.target.files]; updateUI(); });
+  inputs.video.addEventListener('change', e => { selectedFiles = [...e.target.files]; updateUI(); });
+
+  function updateUI() {
+    const label = labels[mode];
+    if (!selectedFiles.length) label.textContent = mode === 'images' ? 'Drop image folder here' : 'Drop video file here';
+    else if (selectedFiles.length === 1) label.textContent = selectedFiles[0].name;
+    else label.textContent = `${selectedFiles.length} files selected`;
+  }
+
+  document.getElementById('upload-btn').addEventListener('click', async () => {
+    if (!selectedFiles.length) { alert('Please select files first.'); return; }
+    const formData = new FormData();
+    selectedFiles.forEach(f => formData.append('files', f));
+    const btn = document.getElementById('upload-btn');
+    btn.textContent = 'Uploading…'; btn.disabled = true;
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.task_id) window.location.href = `/processing/${data.task_id}`;
+      else alert('Upload failed: ' + (data.error || 'Unknown error'));
+    } catch (e) { alert('Network error — check the console.'); console.error(e); }
+    finally { btn.disabled = false; btn.textContent = '✦ Start Reconstruction'; }
+  });
+</script>
+{% endblock %}

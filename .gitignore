@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environment ────────────────────────────────────────
+venv/
+env/
+.venv/
+
+# ── App runtime data (user uploads / job outputs) ─────────────
+uploads/
+outputs/
+jobs/
+extracted_frames/
+frames/
+
+# ── Sensitive config ───────────────────────────────────────────
+.env
+*.env
+
+# ── Large media files (not for source control) ─────────────────
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.obj
+*.glb
+*.exr
+*.mtl
+
+# ── Reference / scratch ───────────────────────────────────────
+iit project copy/
+input.mp4
+*.log
+/tmp/
+
+# ── OS / Editor ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

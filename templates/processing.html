@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>3D Reconstructor — Processing</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.3.0/model-viewer.min.js"></script>
+</head>
+
+<body>
+
+    <div class="dashboard" id="dashboard">
+
+        <!-- TOP BAR -->
+        <div class="top-bar">
+            <a href="/" class="top-bar-logo">🔺 <span>3D</span> Reconstructor</a>
+            <div class="top-bar-sep"></div>
+            <div class="top-bar-hint">
+                <div class="dot active" id="status-dot"></div>
+                <span id="top-status">Processing…</span>
+            </div>
+            <!-- Action buttons -->
+            <div class="top-actions">
+                <button id="stop-btn" class="action-btn danger" onclick="stopJob()" title="Stop reconstruction">
+                    ⏹ Stop
+                </button>
+                <a id="download-btn" class="action-btn primary hidden" href="#" download title="Download GLB model">
+                    ⬇ Download
+                </a>
+            </div>
+        </div>
+
+        <!-- LEFT: IMAGE GALLERY (resizable width) -->
+        <div class="gallery-panel" id="gallery-panel">
+            <div class="panel-label">
+                Source Images
+                <span id="img-count" style="margin-left:auto;color:var(--dim)"></span>
+            </div>
+            <div class="gallery-grid" id="image-grid"></div>
+            <div class="gallery-empty" id="gallery-empty">Waiting for images…</div>
+        </div>
+
+        <!-- RESIZE HANDLE (vertical — between gallery and viewport) -->
+        <div class="resize-handle-v" id="resize-v" title="Drag to resize"></div>
+
+        <!-- CENTER: VIEWPORT -->
+        <div class="viewport-panel" id="viewport">
+            <div class="placeholder-3d" id="placeholder-text">
+                <div class="spinner-ring"></div>
+                <h2>Reconstructing…</h2>
+                <p>3D model appears here when complete</p>
+            </div>
+        </div>
+
+        <!-- RESIZE HANDLE (horizontal — between main and task manager) -->
+        <div class="resize-handle-h" id="resize-h" title="Drag to resize"></div>
+
+        <!-- BOTTOM: TASK MANAGER (resizable height) -->
+        <div class="nodes-panel" id="nodes-panel">
+            <div class="panel-tabs">
+                <span class="tab active">Task Manager</span>
+                <span class="tab-status" id="overall-status">Status: Queued</span>
+            </div>
+            <div class="task-table-wrap">
+                <table class="task-table">
+                    <thead>
+                        <tr>
+                            <th class="col-nb">Nb</th>
+                            <th class="col-node">Node</th>
+                            <th class="col-state">State</th>
+                            <th class="col-chunks">Chunks Done</th>
+                            <th class="col-exec">Exec Mode</th>
+                            <th class="col-progress">Progress</th>
+                        </tr>
+                    </thead>
+                    <tbody id="task-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const taskId = "{{ task_id }}";
+        let polling = true;
+
+        const PIPELINE = [
+            { name: "CameraInit", chunks: 1, doneAt: 8 },
+            { name: "FeatureExtraction", chunks: 4, doneAt: 18 },
+            { name: "ImageMatching", chunks: 1, doneAt: 28 },
+            { name: "FeatureMatching", chunks: 8, doneAt: 38 },
+            { name: "StructureFromMotion", chunks: 1, doneAt: 50 },
+            { name: "PrepareDenseScene", chunks: 4, doneAt: 60 },
+            { name: "DepthMap", chunks: 12, doneAt: 70 },
+            { name: "DepthMapFilter", chunks: 6, doneAt: 76 },
+            { name: "Meshing", chunks: 1, doneAt: 83 },
+            { name: "MeshFiltering", chunks: 1, doneAt: 88 },
+            { name: "Texturing", chunks: 1, doneAt: 94 },
+            { name: "Export GLB", chunks: 1, doneAt: 100 },
+        ];
+
+        // Build table
+        const tbody = document.getElementById('task-tbody');
+        PIPELINE.forEach((node, i) => {
+            const bricks = Array.from({ length: node.chunks }, (_, c) =>
+                `<div class="brick" id="br-${i}-${c}"></div>`).join('');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+            <td class="col-nb">${i + 1}</td>
+            <td class="col-node">${node.name}</td>
+            <td class="col-state"><span class="state-badge waiting" id="st-${i}">WAITING</span></td>
+            <td class="col-chunks" id="ch-${i}">0 / ${node.chunks}</td>
+            <td class="col-exec">LOCAL</td>
+            <td class="col-progress"><div class="brick-bar">${bricks}</div></td>`;
+            tbody.appendChild(tr);
+        });
+
+        function updateTable(progress, status) {
+            const done = status === 'complete';
+            const failed = status === 'failed' || status === 'cancelled';
+
+            document.getElementById('overall-status').textContent =
+                `${status.toUpperCase().replace('_', ' ')}  —  ${progress}%`;
+            document.getElementById('top-status').textContent =
+                done ? 'Complete ✓' : failed ? 'Stopped' : 'Processing…';
+            document.getElementById('status-dot').className =
+                'dot' + (done ? ' success' : failed ? '' : ' active');
+
+            PIPELINE.forEach((node, i) => {
+                const prevDone = i > 0 ? PIPELINE[i - 1].doneAt : 0;
+                const badge = document.getElementById(`st-${i}`);
+                const chunksEl = document.getElementById(`ch-${i}`);
+                let state;
+
+                if (done || progress >= node.doneAt) {
+                    state = 'success';
+                    chunksEl.textContent = `${node.chunks} / ${node.chunks}`;
+                    for (let c = 0; c < node.chunks; c++)
+                        document.getElementById(`br-${i}-${c}`).className = 'brick done';
+                } else if (progress <= prevDone) {
+                    state = 'waiting';
+                    chunksEl.textContent = `0 / ${node.chunks}`;
+                    for (let c = 0; c < node.chunks; c++)
+                        document.getElementById(`br-${i}-${c}`).className = 'brick';
+                } else {
+                    state = 'running';
+                    const frac = Math.max(0, Math.min(1, (progress - prevDone) / (node.doneAt - prevDone)));
+                    const ndone = Math.round(frac * node.chunks);
+                    chunksEl.textContent = `${ndone} / ${node.chunks}`;
+                    for (let c = 0; c < node.chunks; c++)
+                        document.getElementById(`br-${i}-${c}`).className =
+                            c < ndone ? 'brick running' : 'brick';
+                }
+                badge.className = `state-badge ${state}`;
+                badge.textContent = { success: 'SUCCESS', running: 'RUNNING', failed: 'FAILED', waiting: 'WAITING' }[state];
+            });
+        }
+
+        function loadImages(list) {
+            const grid = document.getElementById('image-grid');
+            const empty = document.getElementById('gallery-empty');
+            const count = document.getElementById('img-count');
+            if (grid.hasChildNodes()) return;
+            if (!list.length) return;
+            empty.style.display = 'none';
+            count.textContent = list.length + ' imgs';
+            list.forEach(img => {
+                const d = document.createElement('div');
+                d.className = 'thumb';
+                d.innerHTML = `<img src="/uploads/${taskId}/${img}" loading="lazy">`;
+                grid.appendChild(d);
+            });
+        }
+
+        function showModel(filename) {
+            document.getElementById('viewport').innerHTML = `
+            <model-viewer class="model-wrapper"
+                src="/download/${filename}"
+                alt="3D Model" auto-rotate camera-controls
+                shadow-intensity="1.2" environment-image="neutral"
+                exposure="1" camera-orbit="45deg 70deg 2.5m">
+            </model-viewer>`;
+            // Show download button
+            const dlBtn = document.getElementById('download-btn');
+            dlBtn.href = `/download/${filename}`;
+            dlBtn.classList.remove('hidden');
+            // Hide stop button
+            document.getElementById('stop-btn').classList.add('hidden');
+        }
+
+        async function stopJob() {
+            if (!confirm('Stop the current reconstruction? Progress will be lost.')) return;
+            polling = false;
+            await fetch(`/cancel/${taskId}`, { method: 'POST' });
+            document.getElementById('stop-btn').classList.add('hidden');
+            document.getElementById('overall-status').textContent = 'CANCELLED';
+            document.getElementById('top-status').textContent = 'Stopped';
+            document.getElementById('placeholder-text').innerHTML =
+                `<div style="font-size:2rem;margin-bottom:.5rem;opacity:.5">⏹</div>
+             <h2 style="color:#888">Reconstruction Stopped</h2>
+             <p style="font-size:.8rem;margin-top:.4rem"><a href="/" style="color:var(--accent)">← Start a new job</a></p>`;
+        }
+
+        async function poll() {
+            if (!polling) return;
+            try {
+                const res = await fetch(`/status/${taskId}`);
+                const data = await res.json();
+                updateTable(data.progress, data.status);
+                if (data.images?.length) loadImages(data.images);
+
+                if (data.status === 'complete') {
+                    polling = false;
+                    showModel(data.result_file);
+                } else if (data.status === 'failed' || data.status === 'cancelled') {
+                    polling = false;
+                    document.getElementById('stop-btn').classList.add('hidden');
+                    document.getElementById('placeholder-text').innerHTML =
+                        `<div style="color:#f87171;font-size:2rem;margin-bottom:.5rem">✗</div>
+                     <h2 style="color:#f87171">Failed</h2>
+                     <p style="font-size:.8rem;max-width:320px;margin-top:.5rem">${data.error || ''}</p>
+                     <p style="font-size:.8rem;margin-top:.8rem"><a href="/" style="color:var(--accent)">← Try again</a></p>`;
+                } else {
+                    setTimeout(poll, 1500);
+                }
+            } catch (e) { console.error(e); setTimeout(poll, 3000); }
+        }
+
+        poll();
+
+        // ── Resizable panels ──────────────────────────────────────
+        const dashboard = document.getElementById('dashboard');
+        const galleryPanel = document.getElementById('gallery-panel');
+        const nodesPanel = document.getElementById('nodes-panel');
+
+        // Vertical resize (gallery width)
+        const resizeV = document.getElementById('resize-v');
+        resizeV.addEventListener('mousedown', e => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = galleryPanel.getBoundingClientRect().width;
+            const onMove = ev => {
+                const newW = Math.max(140, Math.min(400, startW + ev.clientX - startX));
+                dashboard.style.gridTemplateColumns = `${newW}px 6px 1fr`;
+            };
+            const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+
+        // Horizontal resize (task manager height)
+        const resizeH = document.getElementById('resize-h');
+        resizeH.addEventListener('mousedown', e => {
+            e.preventDefault();
+            const startY = e.clientY;
+            const startH = nodesPanel.getBoundingClientRect().height;
+            const onMove = ev => {
+                const newH = Math.max(120, Math.min(500, startH - (ev.clientY - startY)));
+                dashboard.style.gridTemplateRows = `36px 1fr 6px ${newH}px`;
+            };
+            const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+    </script>
+</body>
+
+</html>
